@@ -9,6 +9,7 @@ Some examples for MNIST dataset (digit 3 & 8 differentiation):
 
 ![MNIST importance](./graphics/MNIST/mnist_full_importance.png)
 ![Top features](./graphics/MNIST/mnist_masked_importance.png)
+
 ![Superimposed on mean 3](./graphics/MNIST/mnist_3_importance.png)
 ![Superimposed on mean 8](./graphics/MNIST/mnist_8_importance.png)
 

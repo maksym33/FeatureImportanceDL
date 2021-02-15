@@ -1,180 +1,121 @@
 import numpy as np
-import tensorflow as tf
+from .config import FIDL_RS
+from .util import  increment_mask, decrement_mask
 
 
 class MaskOptimizer:
-    def __init__(self, mask_batch_size, data_shape, unmasked_data_size,perturbation_size,
-                 frac_of_rand_masks=0.5, epoch_condition=1000 ):
-        self.data_shape = data_shape
-        self.unmasked_data_size = unmasked_data_size
-        self.data_size = np.zeros(data_shape).size
-        self.mask_history = []
-        self.raw_mask_history = []
-        self.loss_history = []
-        self.epoch_counter = 0
+    def __init__(self, mask_batch_size, mask_shape, flip_size,
+                 frac_of_rand_masks=0.5, s_guess=None):
+        self.mask_shape = mask_shape
+        self.data_size = np.prod(mask_shape)
         self.mask_batch_size = mask_batch_size
         self.frac_of_rand_masks = frac_of_rand_masks
-        self.epoch_condition = epoch_condition
-        self.perturbation_size = perturbation_size
-        self.max_optimization_iters = 5
-        self.step_count_history = []
+        self.flip_size = flip_size
+        self.s_mean = int(self.data_size / 2) if s_guess is None else s_guess
+        self.s_mean_frac = 1.0 * self.s_mean / self.data_size
 
-    def gradient(model, x):
-        x_tensor = tf.convert_to_tensor(x, dtype=tf.float32)
-        with tf.GradientTape() as t:
-            t.watch(x_tensor)
-            # loss_mask_size = (tf.norm(x_tensor,ord=2,axis=1))
-            loss_model = model(x_tensor)
-            loss = loss_model  # +0.001*loss_mask_size#*loss_mask_size
-        return t.gradient(loss, x_tensor).numpy(), loss_model
+    def get_random_batch_of_masks(self, batch_size):
+        s_list = self.get_s(batch_size, mean=self.s_mean)
+        m = np.empty((batch_size,)+self.data_size)
+        for i,s in enumerate(s_list):
+            m[i] = increment_mask(m[i],s)
+        return m
 
-    def new_get_mask_from_grads(grads, unmasked_size, mask_size):
-        m_opt = np.zeros(shape=mask_size)
-        top_arg_grad = np.argpartition(grads, -unmasked_size)[-unmasked_size:]
-        m_opt[top_arg_grad] = 1
-        return m_opt
+    def get_s(self, n_samples, mean=None):
+        return FIDL_RS.binomial(self.data_size-self.flip_size,
+                                self.s_mean_frac if mean is None else
+                                (mean if mean < 1 else 1.0 * mean / self.data_size), n_samples).astype('int')
+    @staticmethod
+    def advance_mask(importances,m,flip_size):
+        flip_idcs = np.argpartition(importances,flip_size)[:flip_size]
+        m[flip_idcs] = 1+ np.negative(m[flip_idcs])
+        return m
 
-    def new_get_m_opt(model, unmasked_size):
-        input_img = np.ones(shape=model.layers[0].output_shape[0][1:])[None, :] / 2  # define an initial random image
-        grad, loss = MaskOptimizer.gradient(model, input_img)
-        grad = np.negative(np.squeeze(grad))  # change sign
-        m_opt = MaskOptimizer.new_get_mask_from_grads(grad, unmasked_size, model.layers[0].output_shape[0][1:])
-        return m_opt
+    def get_new_optimal_mask(self, pfs_base_model, step,
+                             max_n_features_in_mask=None,
+                             return_n_features=False,
+                             return_change_hist = False,
+                             record_hist_to_prevent_loops = 3,
+                             max_iters=100
+                             ):
+        assert len(pfs_base_model.inputs[0].shape.as_list()) == 2
+        max_n_features = pfs_base_model.inputs[0].shape[1]
+        if max_n_features_in_mask is None:
+            max_n_features_in_mask = max_n_features # no limit
+        m_opt = np.zeros((1, max_n_features),dtype='float')
+        n_features = 0
+        iter = 0
+        hist={'masks':[],'chosen_features':[]}
+        record_hist = np.zeros((record_hist_to_prevent_loops, max_n_features))
+        record_hist_idx = 0
+        while True:
+            importances = pfs_base_model.predict(m_opt)[0]
+            if n_features == max_n_features_in_mask or np.all(importances > 0):
+                # found the optimal set
+                break
 
-    def new_check_for_opposite_grad(m_opt_grad, m_opt_indexes):
-        m_opt_grad_cp = np.copy(m_opt_grad[m_opt_indexes])
-        m_opt_arg_opposite_grad = np.argwhere(m_opt_grad_cp < 0)
-        return m_opt_indexes[m_opt_arg_opposite_grad]
+            if n_features + step <= max_n_features_in_mask:
+                current_step = step
+            else:
+                current_step = max_n_features_in_mask - n_features
+            best_choices = np.argpartition(importances,current_step)[:current_step] # for minimization
+            print(n_features,"Choices: ", best_choices,"imps: ",np.round(importances[best_choices],3))
+            m_opt[:,best_choices] = 1.0 - m_opt[:,best_choices] # flips 0->1 and 1->0
+            n_added_features = np.count_nonzero(m_opt[:,best_choices])
+            n_features += n_added_features
+            n_features -= current_step - n_added_features
 
-    def new_check_loss_for_opposite_indexes(model, m_opt, min_index, max_index, opposite_indexes):
-        m_opt_changed = False
-        m_opt_loss = model.predict(m_opt[None, :])
-        for ind in opposite_indexes:
-            m_new_opt = np.copy(m_opt)
-            m_new_opt[max_index] = 1
-            m_new_opt[ind] = 0
-            m_new_opt_loss = model.predict(m_new_opt[None, :])
-            if m_new_opt_loss < m_opt_loss:
-                # print("Changed i "+str(max_index)+" from 0->1 and"+str(ind)+" from 1->0.")
-                return True, m_new_opt
-        return False, m_opt
+            if return_change_hist:
+                hist['masks'].append(np.copy(m_opt))
+                hist['chosen_features'].append(best_choices)
 
-    def new_check_for_likely_change(model, m_opt, min_index, max_index, m_opt_grad):
-        m_opt_changed = False
-        m_opt_loss = np.squeeze(model.predict(m_opt[None, :]))
-        not_m_opt_indexes = np.argwhere(m_opt == 0)
-        max_index = not_m_opt_indexes[np.argmax(m_opt_grad[not_m_opt_indexes])]
-        m_new_opt = np.copy(m_opt)
-        m_new_opt[min_index] = 0
-        m_new_opt[max_index] = 1
-        m_new_opt_loss = np.squeeze(model.predict(m_new_opt[None, :]))
-        # print("New proposed likely m_opt:   ")
-        # print(str(m_new_opt))
-        # print("Losses old/new: "+str(m_opt_loss)+"   "+str(m_new_opt_loss))
-        if (m_new_opt_loss < m_opt_loss):
-            return True, m_new_opt
+            if iter>=max_iters:
+                print("Optimized mask stopped for iter:",iter,"out of",max_iters)
+                break
+            else:
+                iter+=1
+
+            if np.where((record_hist == m_opt[0]).all(axis=1))[0].size>0:
+                print(np.where((record_hist == m_opt[0]).all(axis=1))[0])
+                print("Optimized mask stopped for hist item:",np.where((record_hist == m_opt[0]).all(axis=1))[0])
+                break
+            if record_hist_to_prevent_loops > 0:
+                #if(len(record_hist)==record_hist_to_prevent_loops):
+                #    record_hist.pop()
+                #record_hist.insert(0,m_opt)
+                record_hist[record_hist_idx] = m_opt
+                record_hist_idx = (record_hist_idx + 1) % record_hist_to_prevent_loops
+            print("M_opt:",np.nonzero(m_opt[0])[0])
+
+        if return_change_hist is False:
+            if return_n_features is True:
+                return m_opt,n_features
+            else:
+                return m_opt
         else:
-            return False, m_opt
+            if return_n_features is True:
+                return m_opt, n_features,hist
+            else:
+                return m_opt,hist
 
-    def get_opt_mask(self, unmasked_size, model, steps=None):
-        m_opt = MaskOptimizer.new_get_m_opt(model, unmasked_size)
-        repeat_optimization = True
-        step_count = 0
-        if steps is None:
-            steps = self.max_optimization_iters
-        while (repeat_optimization == True and step_count < steps):
-            # print(step_count)
-            # print(np.squeeze(np.argwhere(m_opt==1)))
-            step_count += 1
-            repeat_optimization = False
-            m_opt_grad, m_opt_loss = MaskOptimizer.gradient(model, m_opt[None, :])
-            m_opt_grad = -np.squeeze(m_opt_grad)
-            m_opt_indexes = np.squeeze(np.argwhere(m_opt == 1))
-            # print(m_opt_indexes)
-            # print(m_opt_grad[m_opt_indexes])
-            # min_index = MaskOptimizer.new_get_min_opt_grad(m_opt_grad,m_opt_indexes)
-            min_index = m_opt_indexes[np.argmin(m_opt_grad[m_opt_indexes])]
-            not_m_opt_indexes = np.squeeze(np.argwhere(m_opt == 0))
-            # print(m_opt_grad[not_m_opt_indexes])
-            if (not_m_opt_indexes.size > 1):
-                max_index = not_m_opt_indexes[np.argmax(m_opt_grad[not_m_opt_indexes])]
-            elif (not_m_opt_indexes.size == 1):
-                max_index = not_m_opt_indexes
-            # print(min_index)
-            # print(max_index)
-            opposite_indexes = MaskOptimizer.new_check_for_opposite_grad(m_opt_grad, m_opt_indexes)
-            # print("opposite indexes: "+str(opposite_indexes))
-            repeat_optimization, m_opt = MaskOptimizer.new_check_loss_for_opposite_indexes(model, m_opt, min_index,
-                                                                                           max_index,
-                                                                                           opposite_indexes)
-            if (repeat_optimization == True):
-                # print("Repeating due negative indexes for unmasked inputs")
-                continue
-            repeat_optimization, m_opt = MaskOptimizer.new_check_for_likely_change(model, m_opt, min_index,
-                                                                                   max_index, m_opt_grad)
-            if (repeat_optimization == True):
-                # print("replacing lowest gradient unmasked index with highest gradient masked index gave better results")
-                continue
-        self.step_count_history.append(step_count - 1)
-        return m_opt
-
-    def check_condiditon(self):
-        if (self.epoch_counter >= self.epoch_condition):
-            return True
+    @staticmethod
+    def flip_masks(m, n_flips, with_repetitions=True):
+        n_masks, mask_size = m.shape
+        if with_repetitions == True:
+            flip_idx_1 = FIDL_RS.randint(0, mask_size, (n_masks, n_flips))
         else:
-            return False
+            # see implementation at:
+            # https://stackoverflow.com/questions/35572381/generate-large-number-of-random-card-decks-numpy/35572771#35572771
+            raise NotImplementedError("Mask flips with no repetitions not implemented.")
+        flip_idx_0 = np.tile(np.arange(n_masks)[:, None], (1, n_flips))
+        m[flip_idx_0, flip_idx_1] = np.logical_not(m[flip_idx_0, flip_idx_1])
+        return m
 
-    def get_random_masks(self):
-        masks_zero = np.zeros(shape=(self.mask_batch_size, self.data_size - self.unmasked_data_size))
-        masks_one = np.ones(shape=(self.mask_batch_size, self.unmasked_data_size))
-        masks = np.concatenate([masks_zero, masks_one], axis=1)
-        masks_permuted = np.apply_along_axis(np.random.permutation, 1, masks)
-        return masks_permuted
-
-    def get_perturbed_masks(mask, n_masks, n_times=1):
-        masks = np.tile(mask, (n_masks, 1))
-        for i in range(n_times):
-            masks = MaskOptimizer.perturb_masks(masks)
-        return masks
-
-    def perturb_masks(masks):
-        def perturb_one_mask(mask):
-            where_0 = np.nonzero(mask - 1)[0]
-            where_1 = np.nonzero(mask)[0]
-            i0 = np.random.randint(0, len(where_0), 1)
-            i1 = np.random.randint(0, len(where_1), 1)
-            mask[where_0[i0]] = 1
-            mask[where_1[i1]] = 0
-            return mask
-
-        n_masks = len(masks)
-        masks = np.apply_along_axis(perturb_one_mask, 1, masks)
-        return masks
-
-    def get_new_mask_batch(self, model, best_performing_mask,  gen_new_opt_mask):
-        self.epoch_counter += 1
-        random_masks = self.get_random_masks()
-        if (gen_new_opt_mask):
-            self.mask_opt = self.get_opt_mask(self.unmasked_data_size, model)
-            # print("Opt: "+str(np.squeeze(np.argwhere(self.mask_opt==1))))
-            # print("Perf: "+str(np.squeeze(np.argwhere(best_performing_mask==1))))
-        if (self.check_condiditon() is True):
-            index = int(self.frac_of_rand_masks * self.mask_batch_size)
-
-            random_masks[index] = self.mask_opt
-            random_masks[index + 1] = best_performing_mask
-            random_masks[index + 2:] = MaskOptimizer.get_perturbed_masks(random_masks[index],
-                                                                         self.mask_batch_size - (index + 2),
-                                                                         self.perturbation_size)
-            # print("mask batch_size: "+str(self.mask_batch_size))
-            # print("index: "+str(index))
-            # print("left: "+str(self.mask_batch_size - (index+1)))
-            # [print(np.squeeze(np.argwhere(i==1))) for i in random_masks]
-        return random_masks
-
-    def get_mask_weights(self, tiling):
-        w = np.ones(shape=self.mask_batch_size)
-        index = int(self.frac_of_rand_masks * self.mask_batch_size)
-        w[index] = 5
-        w[index + 1] = 10
-        return np.tile(w, tiling)
+    @staticmethod
+    def get_random_masks(shape, frac_of_1, dtype='uint'):
+        """
+        :param shape:
+        :param frac_of_1:
+        :return: can return masks with bigger size (more 1s) as this is a random function
+        """
+        return FIDL_RS.binomial(1, frac_of_1, size=np.prod(shape)).reshape(shape).astype(dtype)

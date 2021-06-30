@@ -71,7 +71,7 @@ class MaskOptimizer:
         # print("New proposed likely m_opt:   ")
         # print(str(m_new_opt))
         # print("Losses old/new: "+str(m_opt_loss)+"   "+str(m_new_opt_loss))
-        print(m_new_opt_loss,"  ",m_opt_loss)
+        #print(m_new_opt_loss,"  ",m_opt_loss)
         if (m_new_opt_loss < m_opt_loss):
             return True, m_new_opt
         else:

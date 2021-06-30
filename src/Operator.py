@@ -35,7 +35,7 @@ class OperatorNetwork:
         x = Dense(dense_arch[-1], activation=last_activation)(x)
         self.model = Model(inputs=[input_data_layer, input_mask_layer], outputs=x)
         print("Object network model built:")
-        self.model.summary()
+        #self.model.summary()
 
     def create_1ch_conv_model(self, input_shape, image_shape, filter_sizes, kernel_sizes, dense_arch, padding,
                               last_activation="softmax"):  # only for grayscale
@@ -57,7 +57,7 @@ class OperatorNetwork:
         x = Dense(dense_arch[-1], activation=last_activation)(x)
         self.model = Model(inputs=[input_data_layer, input_mask_layer], outputs=x)
         print("Object network model built:")
-        self.model.summary()
+        #self.model.summary()
 
     def create_2ch_conv_model(self, input_shape, image_shape, filter_sizes, kernel_sizes, dense_arch, padding,
                               last_activation="softmax"):  # only for grayscale
@@ -84,7 +84,7 @@ class OperatorNetwork:
         x = Dense(dense_arch[-1], activation=last_activation)(x)
         self.model = Model(inputs=[input_data_layer, input_mask_layer], outputs=x)
         print("Object network model built:")
-        self.model.summary()
+        #self.model.summary()
 
     def create_batch(self, x, masks, y):
         """

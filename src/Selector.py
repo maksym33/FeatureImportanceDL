@@ -32,7 +32,7 @@ class SelectorNetwork:
         x = Dense(dense_arch[-1], activation="linear")(x)
         self.model = Model(inputs=[input_mask_layer], outputs=x)
         print("Subject Network model built:")
-        self.model.summary()
+        #self.model.summary()
 
     def named_logs(self, model, logs):
         result = {}

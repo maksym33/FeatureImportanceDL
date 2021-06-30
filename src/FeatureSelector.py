@@ -124,7 +124,7 @@ class FeatureSelector():
 
             self.prev_mopt_condition = mopt_condition
             if (use_val_data is True and self.operator.epoch_counter % val_freq == 0):
-                self.operator.test_one(X_val, m, y_val)
+                self.operator.validate_one(X_val, m, y_val)
             if (self.operator.useEarlyStopping is True and self.operator.ES_stop_training is True):
                 print("Activate early stopping at training epoch/batch: " + str(self.operator.epoch_counter))
                 print("Loading weights from epoch: " + str(self.operator.ES_best_epoch))

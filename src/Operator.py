@@ -69,12 +69,12 @@ class OperatorNetwork:
         ch_mask = Reshape(target_shape=(1,) + image_shape)(input_mask_layer)
 
         for i in range(len(filter_sizes)):
-            ch_data = Conv2D(filters=filter_sizes[i], kernel_size=kernel_sizes[i], data_format="channels_first",
+            ch_data = Conv2D(filters=filter_sizes[i], kernel_size=kernel_sizes[i], data_format="channels_last",
                              activation="relu", padding=padding)(ch_data)
-            ch_data = MaxPool2D(pool_size=(2, 2), padding=padding, data_format="channels_first")(ch_data)
-            ch_mask = Conv2D(filters=filter_sizes[i], kernel_size=kernel_sizes[i], data_format="channels_first",
+            ch_data = MaxPool2D(pool_size=(2, 2), padding=padding, data_format="channels_last")(ch_data)
+            ch_mask = Conv2D(filters=filter_sizes[i], kernel_size=kernel_sizes[i], data_format="channels_last",
                              activation="relu", padding=padding)(ch_mask)
-            ch_mask = MaxPool2D(pool_size=(2, 2), padding=padding, data_format="channels_first")(ch_mask)
+            ch_mask = MaxPool2D(pool_size=(2, 2), padding=padding, data_format="channels_last")(ch_mask)
         ch_mask = Flatten()(ch_mask)
         ch_data = Flatten()(ch_data)
 
